@@ -64,6 +64,7 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [qualityMode, setQualityMode] = useState<"1080p" | "720p">("1080p");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [remotePlaybackBlocked, setRemotePlaybackBlocked] = useState(false);
   const [localMovieName, setLocalMovieName] = useState("");
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -73,6 +74,9 @@ export function App() {
   const movieStreamRef = useRef<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const makingOfferRef = useRef(false);
+  const membersRef = useRef<MemberState[]>([]);
+  const roleRef = useRef<RoomRole>(role);
   const isHost = role === "host";
   const host = members.find((member) => member.role === "host");
   const viewer = members.find((member) => member.role === "viewer");
@@ -83,8 +87,20 @@ export function App() {
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current
+        .play()
+        .then(() => setRemotePlaybackBlocked(false))
+        .catch(() => setRemotePlaybackBlocked(true));
     }
   }, [remoteStream]);
+
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+
+  useEffect(() => {
+    roleRef.current = role;
+  }, [role]);
 
   useEffect(() => {
     return () => {
@@ -218,7 +234,7 @@ export function App() {
       case "webrtc:peer-left":
         setRemoteStream(null);
         closePeerConnection();
-        await ensurePeerConnection(role);
+        await ensurePeerConnection(roleRef.current);
         break;
 
       case "webrtc:offer":
@@ -269,21 +285,22 @@ export function App() {
   }
 
   async function handlePeerReady(peerRole: RoomRole) {
-    if (role !== "host" || peerRole !== "viewer") {
+    if (roleRef.current !== "host" || peerRole !== "viewer") {
       return;
     }
 
     const pc = await ensurePeerConnection("host");
     await addHostTracks(pc);
-    await createAndSendOffer(pc);
+    await renegotiateIfViewerPresent(pc, true);
   }
 
   async function handleOffer(description: RTCSessionDescriptionInit) {
-    const pc = await ensurePeerConnection(role);
+    const currentRole = roleRef.current;
+    const pc = await ensurePeerConnection(currentRole);
     await pc.setRemoteDescription(description);
     await flushPendingCandidates(pc);
 
-    if (role === "viewer") {
+    if (currentRole === "viewer") {
       await addMicrophoneTrack(pc);
     }
 
@@ -293,13 +310,13 @@ export function App() {
   }
 
   async function handleAnswer(description: RTCSessionDescriptionInit) {
-    const pc = await ensurePeerConnection(role);
+    const pc = await ensurePeerConnection(roleRef.current);
     await pc.setRemoteDescription(description);
     await flushPendingCandidates(pc);
   }
 
   async function handleIceCandidate(candidate: RTCIceCandidateInit) {
-    const pc = await ensurePeerConnection(role);
+    const pc = await ensurePeerConnection(roleRef.current);
 
     if (!pc.remoteDescription) {
       pendingCandidatesRef.current.push(candidate);
@@ -354,6 +371,7 @@ export function App() {
       movieStreamRef.current = movieStream;
       const pc = await ensurePeerConnection("host");
       await addHostTracks(pc);
+      await renegotiateIfViewerPresent(pc);
 
       const mediaState: HostMediaState = {
         fileName: localMovieName || "本地电影",
@@ -365,7 +383,7 @@ export function App() {
       setMedia(mediaState);
       send({ type: "media:host-ready", media: mediaState });
       syncPlayback("playing");
-      setNotice("电影已经开始推流。观众加入后会自动建立连接。");
+      setNotice("电影已经开始推流。");
     } catch (error) {
       setMovieError(error instanceof Error ? error.message : "准备推流失败。");
     }
@@ -373,16 +391,18 @@ export function App() {
 
   async function addHostTracks(pc: RTCPeerConnection) {
     const video = videoRef.current;
-    if (!video || !isCapturableVideo(video)) {
+    if (!movieStreamRef.current && (!video || !isCapturableVideo(video))) {
+      await addMicrophoneTrack(pc);
       return;
     }
 
-    if (!movieStreamRef.current) {
+    if (!movieStreamRef.current && video && isCapturableVideo(video)) {
       movieStreamRef.current = video.captureStream();
     }
 
     const movieStream = movieStreamRef.current;
     if (!movieStream) {
+      await addMicrophoneTrack(pc);
       return;
     }
 
@@ -428,6 +448,20 @@ export function App() {
     parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
     parameters.encodings[0].maxBitrate = qualityMode === "1080p" ? 5_500_000 : 2_500_000;
     await sender.setParameters(parameters);
+  }
+
+  async function renegotiateIfViewerPresent(pc: RTCPeerConnection, force = false) {
+    const hasViewer = force || membersRef.current.some((member) => member.role === "viewer");
+    if (!hasViewer || makingOfferRef.current || pc.signalingState !== "stable") {
+      return;
+    }
+
+    makingOfferRef.current = true;
+    try {
+      await createAndSendOffer(pc);
+    } finally {
+      makingOfferRef.current = false;
+    }
   }
 
   function toggleMute() {
@@ -520,6 +554,15 @@ export function App() {
 
     await navigator.clipboard.writeText(shareUrl);
     setNotice("邀请链接已复制。");
+  }
+
+  async function playRemoteStream() {
+    try {
+      await remoteVideoRef.current?.play();
+      setRemotePlaybackBlocked(false);
+    } catch {
+      setNotice("浏览器仍然阻止播放，请检查页面声音或自动播放权限。");
+    }
   }
 
   return (
@@ -655,6 +698,14 @@ export function App() {
                   <div className="empty-video">
                     <MonitorPlay size={36} />
                     等待房主开始推流
+                  </div>
+                ) : null}
+                {remotePlaybackBlocked ? (
+                  <div className="empty-video action-overlay">
+                    <button className="primary" onClick={playRemoteStream} type="button">
+                      <Play size={18} />
+                      播放远端电影
+                    </button>
                   </div>
                 ) : null}
               </div>

@@ -40,6 +40,19 @@ const initialPlayback: PlaybackState = {
   updatedAt: Date.now()
 };
 
+const qualityProfiles = {
+  "1080p": {
+    label: "1080p 高画质",
+    maxBitrate: 12_000_000,
+    maxFramerate: 30
+  },
+  "720p": {
+    label: "720p 稳定",
+    maxBitrate: 4_000_000,
+    maxFramerate: 30
+  }
+} as const;
+
 type CapturableVideoElement = HTMLVideoElement & {
   captureStream: () => MediaStream;
 };
@@ -101,6 +114,14 @@ export function App() {
   useEffect(() => {
     roleRef.current = role;
   }, [role]);
+
+  useEffect(() => {
+    if (!isHost || !pcRef.current) {
+      return;
+    }
+
+    void applyVideoQuality(pcRef.current);
+  }, [isHost, qualityMode]);
 
   useEffect(() => {
     return () => {
@@ -410,6 +431,7 @@ export function App() {
       if (!pc.getSenders().some((sender) => sender.track === track)) {
         const sender = pc.addTrack(track, movieStream);
         if (track.kind === "video") {
+          track.contentHint = "detail";
           await setVideoBitrate(sender);
         }
       }
@@ -445,9 +467,21 @@ export function App() {
 
   async function setVideoBitrate(sender: RTCRtpSender) {
     const parameters = sender.getParameters();
+    const profile = qualityProfiles[qualityMode];
+
     parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
-    parameters.encodings[0].maxBitrate = qualityMode === "1080p" ? 5_500_000 : 2_500_000;
+    parameters.encodings[0].maxBitrate = profile.maxBitrate;
+    parameters.encodings[0].maxFramerate = profile.maxFramerate;
+    parameters.encodings[0].scaleResolutionDownBy = 1;
     await sender.setParameters(parameters);
+  }
+
+  async function applyVideoQuality(pc: RTCPeerConnection) {
+    const videoSenders = pc.getSenders().filter((sender) => sender.track?.kind === "video");
+
+    for (const sender of videoSenders) {
+      await setVideoBitrate(sender);
+    }
   }
 
   async function renegotiateIfViewerPresent(pc: RTCPeerConnection, force = false) {
@@ -780,14 +814,14 @@ export function App() {
                     onClick={() => setQualityMode("1080p")}
                     type="button"
                   >
-                    1080p
+                    {qualityProfiles["1080p"].label}
                   </button>
                   <button
                     className={qualityMode === "720p" ? "selected" : ""}
                     onClick={() => setQualityMode("720p")}
                     type="button"
                   >
-                    720p 稳定
+                    {qualityProfiles["720p"].label}
                   </button>
                 </div>
               ) : null}

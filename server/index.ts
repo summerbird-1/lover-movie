@@ -15,6 +15,7 @@ import type {
 const PORT = Number(process.env.PORT ?? 8787);
 const ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_VIEWERS = 1;
+const iceServers = loadIceServers();
 
 interface ClientConnection {
   id: string;
@@ -316,8 +317,26 @@ function toRoomSummary(room: Room, req: express.Request): RoomSummary {
     inviteUrl: `${protocol}://${host}/room/${room.id}`,
     expiresAt: new Date(room.expiresAt).toISOString(),
     hasHost: [...room.members.values()].some((member) => member.role === "host"),
-    viewerCount: [...room.members.values()].filter((member) => member.role === "viewer").length
+    viewerCount: [...room.members.values()].filter((member) => member.role === "viewer").length,
+    iceServers
   };
+}
+
+function loadIceServers(): RTCIceServer[] {
+  const fallback: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+  const raw = process.env.ICE_SERVERS_JSON;
+
+  if (!raw) {
+    return fallback;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as RTCIceServer[];
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : fallback;
+  } catch {
+    console.warn("ICE_SERVERS_JSON is invalid, falling back to Google STUN.");
+    return fallback;
+  }
 }
 
 setInterval(() => {

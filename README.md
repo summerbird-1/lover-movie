@@ -47,3 +47,24 @@ PORT=8787 npm start
 - 第一版只限制双人房间，房主离开后观影中断。
 - 房主上行带宽决定观众体验。1080p 通常需要稳定的较高上行，卡顿时切换 720p 稳定模式。
 - 服务端内存保存房间状态，重启会清空房间；生产需要接 Redis 或数据库。
+
+## WebRTC 连通和画质
+
+只配置 STUN 时，部分家庭宽带、校园网、公司网、移动网络会因为 NAT 类型无法点对点连通，表现为 WebRTC `failed` 或 ICE `disconnected`。生产环境应配置 TURN，让连接失败时可以走中继。
+
+服务端支持通过环境变量下发 ICE 配置：
+
+```bash
+ICE_SERVERS_JSON='[
+  { "urls": "stun:stun.l.google.com:19302" },
+  {
+    "urls": "turn:turn.example.com:3478",
+    "username": "user",
+    "credential": "password"
+  }
+]'
+```
+
+Render 上可以在服务的 Environment 里添加 `ICE_SERVERS_JSON`。如果使用免费 TURN 或自建 coturn，确认 UDP/TCP 3478 已开放；复杂网络下建议同时提供 `turns:...:5349`。
+
+画质和帧率主要受房主上行、CPU 编码能力和 WebRTC 拥塞控制影响。默认使用 720p 稳定模式；1080p 高画质需要房主有稳定的 15Mbps 以上上行，否则会出现明显掉帧、马赛克或延迟。

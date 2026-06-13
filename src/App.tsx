@@ -28,9 +28,7 @@ import type {
   ServerMessage
 } from "../shared/protocol";
 
-const rtcConfig: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-};
+const fallbackIceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
 
 const initialPlayback: PlaybackState = {
   status: "idle",
@@ -43,12 +41,12 @@ const initialPlayback: PlaybackState = {
 const qualityProfiles = {
   "1080p": {
     label: "1080p 高画质",
-    maxBitrate: 12_000_000,
+    maxBitrate: 10_000_000,
     maxFramerate: 30
   },
   "720p": {
     label: "720p 稳定",
-    maxBitrate: 4_000_000,
+    maxBitrate: 5_000_000,
     maxFramerate: 30
   }
 } as const;
@@ -75,7 +73,7 @@ export function App() {
   const [muted, setMuted] = useState(false);
   const [movieError, setMovieError] = useState("");
   const [notice, setNotice] = useState("");
-  const [qualityMode, setQualityMode] = useState<"1080p" | "720p">("1080p");
+  const [qualityMode, setQualityMode] = useState<"1080p" | "720p">("720p");
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [remotePlaybackBlocked, setRemotePlaybackBlocked] = useState(false);
   const [localMovieName, setLocalMovieName] = useState("");
@@ -84,9 +82,12 @@ export function App() {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const movieStreamRef = useRef<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+  const inboundStreamRef = useRef<MediaStream>(new MediaStream());
   const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const iceServersRef = useRef<RTCIceServer[]>(fallbackIceServers);
   const makingOfferRef = useRef(false);
   const membersRef = useRef<MemberState[]>([]);
   const roleRef = useRef<RoomRole>(role);
@@ -104,6 +105,13 @@ export function App() {
         .play()
         .then(() => setRemotePlaybackBlocked(false))
         .catch(() => setRemotePlaybackBlocked(true));
+    }
+  }, [remoteStream]);
+
+  useEffect(() => {
+    if (remoteAudioRef.current && remoteStream) {
+      remoteAudioRef.current.srcObject = remoteStream;
+      remoteAudioRef.current.play().catch(() => setRemotePlaybackBlocked(true));
     }
   }, [remoteStream]);
 
@@ -140,6 +148,7 @@ export function App() {
 
     const created = (await response.json()) as RoomSummary;
     setRoom(created);
+    iceServersRef.current = created.iceServers?.length ? created.iceServers : fallbackIceServers;
     setJoinRoomId(created.roomId);
     window.history.replaceState(null, "", `/room/${created.roomId}`);
   }
@@ -171,6 +180,7 @@ export function App() {
       setRoom(summary);
     }
 
+    iceServersRef.current = summary.iceServers?.length ? summary.iceServers : fallbackIceServers;
     connectWebSocket(summary.roomId, selectedRole);
   }
 
@@ -277,7 +287,7 @@ export function App() {
       return pcRef.current;
     }
 
-    const pc = new RTCPeerConnection(rtcConfig);
+    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
     pcRef.current = pc;
 
     pc.onicecandidate = (event) => {
@@ -287,14 +297,26 @@ export function App() {
     };
 
     pc.ontrack = (event) => {
-      const [stream] = event.streams;
-      if (stream) {
-        setRemoteStream(stream);
+      const inbound = inboundStreamRef.current;
+      if (!inbound.getTracks().some((track) => track.id === event.track.id)) {
+        inbound.addTrack(event.track);
       }
+
+      event.track.onended = () => {
+        inbound.removeTrack(event.track);
+        setRemoteStream(new MediaStream(inbound.getTracks()));
+      };
+
+      setRemoteStream(new MediaStream(inbound.getTracks()));
     };
 
     pc.onconnectionstatechange = () => setRtcState(pc.connectionState);
-    pc.oniceconnectionstatechange = () => setIceState(pc.iceConnectionState);
+    pc.oniceconnectionstatechange = () => {
+      setIceState(pc.iceConnectionState);
+      if (pc.iceConnectionState === "failed") {
+        pc.restartIce();
+      }
+    };
 
     if (currentRole === "viewer") {
       pc.addTransceiver("video", { direction: "recvonly" });
@@ -562,6 +584,7 @@ export function App() {
     pcRef.current?.close();
     pcRef.current = null;
     pendingCandidatesRef.current = [];
+    inboundStreamRef.current = new MediaStream();
     setRtcState("new");
     setIceState("new");
   }
@@ -728,6 +751,7 @@ export function App() {
             ) : (
               <div className="viewer-player">
                 <video ref={remoteVideoRef} autoPlay controls playsInline />
+                <audio ref={remoteAudioRef} autoPlay />
                 {!remoteStream ? (
                   <div className="empty-video">
                     <MonitorPlay size={36} />

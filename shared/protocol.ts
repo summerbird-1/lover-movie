@@ -16,6 +16,7 @@ export interface RoomSummary {
   expiresAt: string;
   hasHost: boolean;
   viewerCount: number;
+  iceServers: RTCIceServer[];
 }
 
 export interface PlaybackState {

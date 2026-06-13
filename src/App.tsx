@@ -340,6 +340,11 @@ export function App() {
   async function handleOffer(description: RTCSessionDescriptionInit) {
     const currentRole = roleRef.current;
     const pc = await ensurePeerConnection(currentRole);
+
+    if (currentRole === "host") {
+      await addHostTracks(pc);
+    }
+
     await pc.setRemoteDescription(description);
     await flushPendingCandidates(pc);
 
@@ -381,6 +386,26 @@ export function App() {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     send({ type: "webrtc:offer", description: offer });
+  }
+
+  async function restartConnection() {
+    closePeerConnection();
+    setRemoteStream(null);
+    setRemotePlaybackBlocked(false);
+    setNotice("正在重新建立点对点连接...");
+
+    const currentRole = roleRef.current;
+    const pc = await ensurePeerConnection(currentRole);
+
+    if (currentRole === "host") {
+      await addHostTracks(pc);
+      await renegotiateIfViewerPresent(pc, true);
+      setNotice("已重新发起连接，请让对方稍等几秒。");
+      return;
+    }
+
+    await createAndSendOffer(pc);
+    setNotice("已请求重新连接，请让房主保持页面打开。");
   }
 
   async function onMovieSelected(event: ChangeEvent<HTMLInputElement>) {
@@ -831,6 +856,10 @@ export function App() {
                 <span>ICE</span>
                 <strong>{iceState}</strong>
               </div>
+              <button className="wide reconnect-button" onClick={restartConnection} type="button">
+                <Radio size={18} />
+                重新连接
+              </button>
               {isHost ? (
                 <div className="quality-toggle">
                   <button

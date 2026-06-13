@@ -327,6 +327,10 @@ video {
   width: 100%;
 }
 
+.reconnect-button {
+  margin: 12px 0 0;
+}
+
 .member-list {
   display: grid;
   gap: 8px;
